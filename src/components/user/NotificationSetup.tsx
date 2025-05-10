@@ -70,6 +70,9 @@ export function NotificationSetup() {
           frequency: reminderFrequency,
           tone: reminderTone,
           phoneNumber: phoneNumber
+        },
+        headers: {
+          'Content-Type': 'application/json'
         }
       });
 
