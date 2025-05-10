@@ -65,14 +65,12 @@ export function NotificationSetup() {
     console.log("Saving settings:", { userId: user.id, frequency: reminderFrequency, tone: reminderTone, phoneNumber }); // Keep log
     try {
       const { data, error } = await supabase.functions.invoke('save-reminder-settings', {
+        method: 'POST',
         body: {
           userId: user.id,
           frequency: reminderFrequency,
           tone: reminderTone,
           phoneNumber: phoneNumber
-        },
-        headers: {
-          'Content-Type': 'application/json'
         }
       });
 
