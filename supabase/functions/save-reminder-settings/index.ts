@@ -1,19 +1,20 @@
 // supabase/functions/save-reminder-settings/index.ts
 // DEBUGGING VERSION: CORS IMPORT AND USAGE TEMPORARILY REMOVED
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { corsHeaders } from '../_shared/cors.ts';
 
-console.log("save-reminder-settings function initializing (DEBUG - NO CORS).");
+console.log("save-reminder-settings function initializing (v3 - explicit OPTIONS handling).");
 
 Deno.serve(async (req)=>{
-  // const requestOrigin = req.headers.get('Origin') || undefined; // CORS related
-  console.log(`save-reminder-settings (DEBUG) received request: ${req.method} ${req.url}`);
+  console.log(`save-reminder-settings (v3) received request: ${req.method} ${req.url}`);
 
-  // CORS OPTIONS request handling removed for this test
-  // if (req.method === 'OPTIONS') {
-  //   console.log("Handling OPTIONS request for save-reminder-settings.");
-  //   return new Response('ok', { headers: { /* Basic headers if needed, or let it be handled by gateway */ } });
-  // }
+  // Explicitly handle OPTIONS preflight requests
+  if (req.method === 'OPTIONS') {
+    console.log("Handling OPTIONS request for save-reminder-settings (v3).");
+    return new Response('ok', { headers: corsHeaders });
+  }
 
+  // All other requests (e.g., POST) proceed here
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -23,7 +24,7 @@ Deno.serve(async (req)=>{
       return new Response(JSON.stringify({
         error: "Server configuration error."
       }), {
-        headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+        headers: { 'Content-Type': 'application/json' },
         status: 500 
       });
     }
@@ -34,21 +35,16 @@ Deno.serve(async (req)=>{
       }
     });
 
-    // For non-OPTIONS requests that are not GET, Supabase might require a Content-Type header
-    // For cron jobs or direct invocations, this might not be an issue.
-    // If it's a POST from frontend, the frontend should send Content-Type: application/json
     if (req.method === 'POST' && !req.headers.get('content-type')?.includes('application/json')) {
       console.warn("Request for POST method does not have Content-Type: application/json");
-      // Depending on strictness, you might return an error or proceed
     }
 
-    // Check if the request body is actually present before trying to parse it
     if (!req.body) {
-      console.error("Request body is null or undefined.");
+      console.error("Request body is null or undefined for POST request.");
       return new Response(JSON.stringify({
-        error: 'Request body is missing.'
+        error: 'Request body is missing for POST request.'
       }), {
-        headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+        headers: { 'Content-Type': 'application/json' },
         status: 400
       });
     }
@@ -61,7 +57,7 @@ Deno.serve(async (req)=>{
       return new Response(JSON.stringify({
         error: 'Invalid JSON in request body.'
       }), {
-        headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+        headers: { 'Content-Type': 'application/json' },
         status: 400
       });
     }
@@ -73,7 +69,7 @@ Deno.serve(async (req)=>{
       return new Response(JSON.stringify({
         error: 'Missing required fields: userId, frequency, tone, phoneNumber are all required.'
       }), {
-        headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+        headers: { 'Content-Type': 'application/json' }, 
         status: 400 
       });
     }
@@ -83,7 +79,7 @@ Deno.serve(async (req)=>{
       return new Response(JSON.stringify({
         error: 'Invalid phone number format. Please use E.164 format (e.g., +61400000000).'
       }), {
-        headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+        headers: { 'Content-Type': 'application/json' },
         status: 400
       });
     }
@@ -107,7 +103,7 @@ Deno.serve(async (req)=>{
 
     if (error) {
       console.error('Error saving reminder settings to profiles table:', error.message, JSON.stringify(error));
-      throw error; // Let the catch block handle it
+      throw error;
     }
 
     console.log('Successfully saved/updated reminder settings for user:', userId, data);
@@ -116,16 +112,16 @@ Deno.serve(async (req)=>{
       message: 'Settings saved successfully.',
       data
     }), {
-      headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+      headers: { 'Content-Type': 'application/json' }, 
       status: 200
     });
 
   } catch (error) {
-    console.error('Error in save-reminder-settings function:', error.message, JSON.stringify(error));
+    console.error('Error in save-reminder-settings function (POST path):', error.message, JSON.stringify(error));
     return new Response(JSON.stringify({
       error: error.message || "Failed to save settings due to an unexpected error."
     }), {
-      headers: { 'Content-Type': 'application/json' }, // CORS headers removed
+      headers: { 'Content-Type': 'application/json' },
       status: 500
     });
   }
