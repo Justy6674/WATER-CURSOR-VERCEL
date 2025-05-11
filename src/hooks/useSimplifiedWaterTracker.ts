@@ -1,177 +1,180 @@
-// @verify_jwt false 
-// (Keep this comment if you intend to deploy with --no-verify-jwt, 
-//  otherwise, remove it and deploy without the --no-verify-jwt flag if you want Supabase to verify user JWTs)
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "sonner";
+import { WaterLogEntry } from "@/types/water.types";
+import { useWaterAchievements } from "./useWaterAchievements";
 
-import { serve } from "https://deno.land/x/sift@0.6.0/mod.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+export const useSimplifiedWaterTracker = () => {
+  const { user, waterGoal } = useAuth();
+  const { streak, completedDays, checkAndUpdateStreak, setStreak, setCompletedDays } = useWaterAchievements();
+  const [loading, setLoading] = useState(true);
+  const [currentHistoryAmount, setCurrentHistoryAmount] = useState(0);
+  const [history, setHistory] = useState<WaterLogEntry[]>([]);
+  const today = new Date().toISOString().split('T')[0];
 
-// --- Environment Variable Retrieval and Validation ---
-// These names MUST match the names of the secrets you've set in your Supabase Project Dashboard
-const SUPABASE_URL_FROM_ENV = Deno.env.get("SUPABASE_URL");
-const SUPABASE_SERVICE_ROLE_KEY_FROM_ENV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const fetchData = useCallback(async () => {
+    if (!user) {
+      setLoading(false);
+      setCurrentHistoryAmount(0);
+      setHistory([]);
+      setStreak(0);
+      setCompletedDays(0);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data: intakeData, error: intakeError } = await supabase
+        .from('water_intake')
+        .select('id, intake_date, intake_amount, created_at')
+        .eq('user_id', user.id)
+        .eq('intake_date', today);
 
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN");
-const TWILIO_FROM_NUMBER = Deno.env.get("TWILIO_PHONE_NUMBER");
+      if (intakeError) throw intakeError;
 
-// Log to check if variables are loaded (these logs will appear in your Supabase Function logs)
-console.log("--- Environment Variable Check ---");
-console.log("SUPABASE_URL:", SUPABASE_URL_FROM_ENV ? "Found" : "NOT FOUND!");
-console.log("SUPABASE_SERVICE_ROLE_KEY:", SUPABASE_SERVICE_ROLE_KEY_FROM_ENV ? "Found" : "NOT FOUND!");
-console.log("GEMINI_API_KEY:", GEMINI_API_KEY ? "Found" : "NOT FOUND!");
-console.log("TWILIO_ACCOUNT_SID:", TWILIO_ACCOUNT_SID ? "Found" : "NOT FOUND!");
-console.log("TWILIO_AUTH_TOKEN:", TWILIO_AUTH_TOKEN ? "Found" : "NOT FOUND!");
-console.log("TWILIO_FROM_NUMBER:", TWILIO_FROM_NUMBER ? "Found" : "NOT FOUND!");
-console.log("--- End Environment Variable Check ---");
+      let todaysTotalAmount = 0;
+      if (intakeData) {
+        todaysTotalAmount = intakeData.reduce((sum, entry) => sum + (entry.intake_amount || 0), 0);
+        setCurrentHistoryAmount(todaysTotalAmount);
 
-// --- Supabase Client Initialization ---
-// Check if essential Supabase variables are present before creating the client
-if (!SUPABASE_URL_FROM_ENV) {
-  console.error("CRITICAL ERROR: SUPABASE_URL environment variable not found or is empty.");
-  // Deno.exit(1); // Or handle by returning an error response immediately if used within serve
-}
-if (!SUPABASE_SERVICE_ROLE_KEY_FROM_ENV) {
-  console.error("CRITICAL ERROR: SUPABASE_SERVICE_ROLE_KEY environment variable not found or is empty.");
-  // Deno.exit(1); // Or handle
-}
+        const formattedHistory: WaterLogEntry[] = intakeData.map(entry => ({
+          id: entry.id,
+          date: entry.intake_date || today,
+          amount: entry.intake_amount || 0,
+          goal: waterGoal,
+          completed: (entry.intake_amount || 0) >= waterGoal,
+        }));
+        setHistory(formattedHistory);
+      }
 
-// This line might still cause an issue if the variables are truly empty,
-// as createClient expects non-empty strings. The checks above are crucial.
-const supabase = createClient(SUPABASE_URL_FROM_ENV!, SUPABASE_SERVICE_ROLE_KEY_FROM_ENV!); // Added '!' assuming checks pass
+      const { data: achievementData, error: achievementError } = await supabase
+        .from('achievements')
+        .select('streak_days, achievement_date')
+        .eq('user_id', user.id)
+        .order('achievement_date', { ascending: false })
+        .limit(1);
 
-serve(async (req: Request) => {
-  // --- Pre-flight CORS Request Handling ---
-  if (req.method === "OPTIONS") {
-    return new Response(null, { // Using null for the body with 204
-      status: 204, // No Content
-      headers: {
-        "Access-Control-Allow-Origin": "*", // Be more specific in production if possible (e.g., your frontend URL)
-        "Access-Control-Allow-Methods": "POST, OPTIONS", // Explicitly list allowed methods
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, Apikey, x-client-info", // Common Supabase headers + Content-Type
-      },
-    });
-  }
+      if (achievementError) throw achievementError;
 
-  // --- Early Exit if Supabase Client Failed to Initialize (due to missing env vars) ---
-  // This check is now more robust because we log before this point
-  if (!SUPABASE_URL_FROM_ENV || !SUPABASE_SERVICE_ROLE_KEY_FROM_ENV) {
-      console.error("Aborting request: Supabase environment variables were not loaded correctly.");
-      return new Response(
-          JSON.stringify({ error: "Internal Server Configuration Error. Essential services unavailable." }),
-          { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
-      );
-  }
-  
-  // --- Request Body Processing ---
-  let userId, tone, phone;
-  try {
-    const body = await req.json();
-    userId = body.userId;
-    tone = body.tone;
-    phone = body.phone;
-  } catch (e) {
-    console.error("Failed to parse request body:", e.message);
-    return new Response(JSON.stringify({ error: "Invalid request body. Expected JSON." }), {
-      status: 400, // Bad Request
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    });
-  }
+      if (achievementData && achievementData.length > 0) {
+        const latestAchievement = achievementData[0];
+        const lastStreakDate = latestAchievement.achievement_date;
+        const yesterdayStr = new Date(new Date().setDate(new Date().getDate() - 1)).toISOString().split('T')[0];
+        
+        if (lastStreakDate === today || (lastStreakDate === yesterdayStr && todaysTotalAmount >= waterGoal)) {
+          setStreak(latestAchievement.streak_days || 0);
+        } else if (lastStreakDate !== today && lastStreakDate !== yesterdayStr) {
+          if (todaysTotalAmount < waterGoal) {
+            setStreak(0);
+          }
+          setCompletedDays(latestAchievement.streak_days || 0);
+        }
+      } else {
+        setStreak(0);
+        setCompletedDays(0);
+      }
 
-  if (!userId || !tone || !phone) {
-    console.warn("Missing fields in request:", { userId, tone, phone });
-    return new Response(JSON.stringify({ error: "Missing required fields: userId, tone, and phone are required." }), {
-      status: 400, // Bad Request
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    });
-  }
+    } catch (error: any) {
+      console.error("Error fetching data:", error);
+      toast.error("Could not load data: " + error.message);
+      setCurrentHistoryAmount(0);
+      setHistory([]);
+      setStreak(0);
+      setCompletedDays(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, today, waterGoal, setStreak, setCompletedDays]);
 
-  // --- Profile Lookup ---
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("id, full_name")
-    .eq("id", userId)
-    .single();
+  useEffect(() => {
+    if (user) {
+      fetchData();
+    } else {
+      setCurrentHistoryAmount(0);
+      setHistory([]);
+      setLoading(false);
+      setStreak(0);
+      setCompletedDays(0);
+    }
+  }, [user, fetchData, setStreak, setCompletedDays]);
 
-  if (profileError || !profile) {
-    console.error("Profile lookup failed:", profileError?.message || "Profile not found.");
-    return new Response(JSON.stringify({ error: `Profile lookup failed: ${profileError?.message || "User not found."}` }), {
-      status: 401, // Unauthorized (or 404 Not Found, depending on desired semantics)
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    });
-  }
+  const addWater = useCallback(async (amount: number) => {
+    if (!user) {
+      toast.error("You must be logged in to add water.");
+      return;
+    }
+    if (amount <= 0) {
+      toast.error("Please enter a valid amount.");
+      return;
+    }
 
-  // --- Gemini API Call ---
-  if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY is not configured.");
-    return new Response(JSON.stringify({ error: "AI service is not configured." }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
-  }
-  let message = `Hey ${profile.full_name}, don’t forget to drink some water!`; // Default message
-  try {
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: `Write a ${tone} hydration reminder for ${profile.full_name}` }] }],
-      }),
-    });
+    const amountBeforeUpdate = currentHistoryAmount;
+    const newTotalCurrentAmount = currentHistoryAmount + amount;
 
-    if (!geminiRes.ok) {
-      const errorBody = await geminiRes.text();
-      console.error(`Gemini API request failed with status ${geminiRes.status}:`, errorBody);
-      // Keep default message if Gemini fails
-    } else {
-      const geminiJson = await geminiRes.json();
-      const generatedText = geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (generatedText) {
-        message = generatedText;
-      } else {
-        console.warn("Gemini response was successful but did not contain expected text structure. Using default message.");
-      }
-    }
-  } catch (e) {
-    console.error("Error calling Gemini API:", e.message);
-    // Keep default message if Gemini call throws an exception
-  }
-  
-  // --- Twilio API Call ---
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_FROM_NUMBER) {
-    console.error("Twilio credentials are not fully configured.");
-    return new Response(JSON.stringify({ error: "SMS service is not configured." }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
-  }
-  try {
-    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
-      },
-      body: new URLSearchParams({
-        From: TWILIO_FROM_NUMBER,
-        To: phone,
-        Body: message,
-      }),
-    });
+    const optimisticEntry: WaterLogEntry = {
+      id: Date.now(), 
+      amount: amount,
+      date: today,
+      goal: waterGoal,
+      completed: newTotalCurrentAmount >= waterGoal,
+    };
+    setHistory(prevHistory => [...prevHistory, optimisticEntry]);
+    setCurrentHistoryAmount(newTotalCurrentAmount);
 
-    if (!twilioRes.ok) {
-      const errorBody = await twilioRes.text(); // Get more details from Twilio error
-      console.error(`Twilio API request failed with status ${twilioRes.status}:`, errorBody);
-      return new Response(JSON.stringify({ error: "Twilio send failed. Could not send SMS.", details: errorBody }), {
-        status: 500, // Internal Server Error
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      });
-    }
-    const twilioJson = await twilioRes.json();
-    console.log("Twilio success response:", twilioJson.sid);
+    try {
+      const entryForDb = {
+        user_id: user.id,
+        intake_amount: amount,
+        intake_date: today,
+      };
 
-  } catch (e) {
-    console.error("Error calling Twilio API:", e.message);
-    return new Response(JSON.stringify({ error: "SMS service encountered an unexpected error." }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
-  }
+      const { data: newDbEntry, error } = await supabase
+        .from('water_intake')
+        .insert(entryForDb)
+        .select('id, intake_date, intake_amount, created_at') 
+        .single();
 
-  // --- Success Response ---
-  return new Response(JSON.stringify({ message: `Message sent: ${message}` }), { // Include the sent message for confirmation
-    status: 200, // OK
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-  });
-});
+      if (error) {
+        throw error;
+      }
+
+      if (newDbEntry) {
+        setHistory(prevHistory =>
+          prevHistory.map(entry =>
+            entry.id === optimisticEntry.id 
+              ? { 
+                  id: newDbEntry.id,
+                  date: newDbEntry.intake_date || today,
+                  amount: newDbEntry.intake_amount || 0,
+                  goal: waterGoal,
+                  completed: (newDbEntry.intake_amount || 0) >= waterGoal, 
+                }
+              : entry
+          )
+        );
+        toast.success(`${amount}ml added!`);
+
+        await checkAndUpdateStreak(amountBeforeUpdate, newTotalCurrentAmount, waterGoal);
+
+      } else {
+        toast("Water added, but could not confirm details."); 
+      }
+    } catch (error: any) {
+      console.error("Error saving water entry:", error);
+      toast.error("Failed to save water entry. " + error.message);
+      setCurrentHistoryAmount(amountBeforeUpdate);
+      setHistory(prevHistory => prevHistory.filter(entry => entry.id !== optimisticEntry.id));
+    }
+  }, [user, currentHistoryAmount, today, waterGoal, checkAndUpdateStreak]);
+
+  return {
+    loading,
+    currentAmount: currentHistoryAmount,
+    streak,
+    completedDays,
+    history,
+    today,
+    addWater,
+    fetchData,
+  };
+};
